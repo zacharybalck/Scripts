@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   echo "Running as root" 
+   exit 1
+fi
+
+# Starting Task 1: Building Offline Repo
+echo "Starting Task 1: Building Offline Repo"
+
+# Creates the repo file in /etc/yum.repos.d/
+cat > /etc/yum.repos.d/offline.repo << EOF
+[offline]
+name=Offline Repository
+baseurl=file:///tmp/usb/temprepo
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0
+priority=1
+EOF
+
+# Clean the repos
+yum clean all
+
+# Echo Starting Task 2: Applying Updates
+echo "Starting Task 2: Applying Updates"
+
+# Apply updates from /mnt/sr0
+yum update --disablerepo=* --enablerepo=offline
+
+# Echo Starting Task 3: Restoring System Settings
+echo "Starting Task 3: Restoring System Settings"
+
+# Reset root password
+echo "Resetting Root Password"
+passwd root
+
+# Reset SSH account password
+echo "Resetting SSH Account Password"
+passwd sshaccount
+
+# Remove temporary files from home directory
+echo "Removing Temporary Files from Home Directory"
+rm -rf /home/*/.cache /home/*/.local/share/Trash
+
+# Clear history and screen history
+echo "Clearing History and Screen History"
+history -c
+rm -f /root/.bash_history
+rm -f /home/*/.bash_history
+
+# Reboot with prompt
+while true; do
+    read -p "Do you want to reboot the server now? (y/n) " yn
+    case $yn in
+        [Yy]* ) reboot; break;;
+        [Nn]* ) exit;;
+        * ) echo "Please answer yes or no.";;
+    esac
+done
