@@ -56,7 +56,7 @@
 
     - name: Set DC-1 as DNS server
       win_dns_client:
-        adapter_names: "*"
+        adapter_names: "Ethernet0"
         dns_servers: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
         register_connection_suffix: yes
 
