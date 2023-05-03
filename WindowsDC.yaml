@@ -1,0 +1,104 @@
+---
+- hosts: all
+  gather_facts: no
+
+  tasks:
+    - name: Install Chocolatey
+      win_chocolatey:
+        name: chocolatey
+        state: present
+
+    - name: Install AD Domain Services role
+      win_feature:
+        name: AD-Domain-Services
+        state: present
+
+    - name: Install DNS Server role
+      win_feature:
+        name: DNS
+        state: present
+
+    - name: Install RSAT-AD-PowerShell module
+      win_chocolatey:
+        name: RSAT.AD.PowerShell
+        state: present
+
+    - name: Set drive labels
+      win_label:
+        drive_letter: "{{ item.drive }}"
+        label: "{{ item.label }}"
+      with_items:
+        - { drive: "C:", label: "OS" }
+        - { drive: "E:", label: "Software" }
+        - { drive: "F:", label: "Audit-Logs" }
+
+    - name: Set local administrator password
+      win_user:
+        name: "dod_admin"
+        password: "qwer1234QWER!@#$"
+        state: present
+
+    - name: Promote DC-1 to domain controller
+      win_domain_controller:
+        domain_admin_user: "Administrator"
+        domain_admin_password: "{{ vault_domain_admin_password }}"
+        domain_name: "{{ ansible_domain }}"
+        domain_netbios_name: "{{ ansible_netbios_name }}"
+        safe_mode_password: "{{ vault_safe_mode_password }}"
+        site_name: "{{ ansible_site_name }}"
+        install_dns: yes
+        promote_restart_timeout: 600
+        roles:
+          - PDC
+          - RID
+          - Infrastructure
+        state: present
+
+    - name: Set DC-1 as DNS server
+      win_dns_client:
+        adapter_names: "*"
+        dns_servers: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+        register_connection_suffix: yes
+
+    - name: Add DC-2 to domain
+      win_domain:
+        domain_admin_user: "Administrator"
+        domain_admin_password: "{{ vault_domain_admin_password }}"
+        domain_name: "{{ ansible_domain }}"
+        domain_netbios_name: "{{ ansible_netbios_name }}"
+        hostname: "DC-2"
+        ou_path: "{{ ansible_ou_path }}"
+        state: domain
+
+    - name: Set local administrator password on DC-2
+      win_user:
+        name: "dod_admin"
+        password: "qwer1234QWER!@#$"
+        state: present
+        runas_username: "Administrator"
+        runas_password: "{{ vault_domain_admin_password }}"
+        become: yes
+
+    - name: Install RSAT-AD-PowerShell module on DC-2
+      win_chocolatey:
+        name: RSAT.AD.PowerShell
+        state: present
+        runas_username: "Administrator"
+        runas_password: "{{ vault_domain_admin_password }}"
+        become: yes
+
+    - name: Set drive labels on DC-2
+      win_label:
+        drive_letter: "{{ item.drive }}"
+        label: "{{ item.label }}"
+      with_items:
+        - { drive: "C:", label: "OS" }
+        - { drive: "E:", label: "Software" }
+        - { drive: "F:", label: "Audit-Logs" }
+      runas_username: "Administrator"
+      runas_password: "{{ vault_domain_admin_password }}"
+      become: yes
+
+    - name: Promote DC-2 to domain controller
+      win_domain_controller:
+        domain_admin_user:
