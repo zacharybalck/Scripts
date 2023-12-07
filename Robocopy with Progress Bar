@@ -1,50 +1,76 @@
-# Define the source and destination paths for the Robocopy operation
-$source = "C:\path\to\source"
-$destination = "D:\path\to\destination"
-
-# Define the Robocopy options
-$options = "/E /Z /ETA /PURGE /MT:8 /NP"
-
-# Execute the Robocopy operation and capture the output
-$cmd = "robocopy `"$source`" `"$destination`" $options"
-$output = Invoke-Expression $cmd 2>&1
-
-# Parse the output to determine the total number of files and bytes to be copied
-$totalBytes = [long]([regex]::Matches($output, "Bytes : (\d+)").Value -replace "\D")
-$totalFiles = [int]([regex]::Matches($output, "Files : (\d+)").Value -replace "\D")
-
-# Define the progress bar parameters
-$progressParams = @{
-    Activity = "Copying files..."
-    Status = "Copying"
-    PercentComplete = 0
-    CurrentOperation = ""
-    TotalFiles = $totalFiles
-    TotalBytes = $totalBytes
-}
-
-# Define a function to update the progress bar
-function Update-Progress {
-    param(
+function robocopy-job {
+    [CmdletBinding()]
+    param (
         [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$Message,
-        
+        [string]$Source,
+
         [Parameter(Mandatory = $true)]
-        [long]$BytesProcessed,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$FilesProcessed
+        [string]$Destination
     )
-    
-    $progressParams.CurrentOperation = $Message
-    $progressParams.PercentComplete = $BytesProcessed / $progressParams.TotalBytes * 100
-    
-    Write-Progress @progressParams
-    
-    if ($FilesProcessed -eq $totalFiles) {
-        Write-Host "Finished copying $totalFiles files ($totalBytes bytes)." -ForegroundColor Green
+
+    # Define the Robocopy options
+    $options = "/E /Z /ETA /PURGE /MT:8 /NP"
+
+    $robocopycmd = "robocopy ""$Source"" ""$Destination"" /mir /bytes"
+
+    # Execute the Robocopy operation and capture the output
+    $output = Invoke-Expression $robocopycmd 2>&1
+
+    $totalBytes = [long]([regex]::Matches($output, "Bytes : (\d+)").Value -replace "\D")
+    $totalFiles = [int]([regex]::Matches($output, "Files : (\d+)").Value -replace "\D")
+
+    $robocopyjob = Start-Job -Name robocopy -ScriptBlock {
+        param ($command)
+        Invoke-Expression -Command $command
+    } -ArgumentList $robocopycmd
+
+    while ($robocopyjob.State -eq 'Running') {
+        $progress = Receive-Job -Job $robocopyjob -Keep -ErrorAction SilentlyContinue
+
+        if ($progress) {
+            $copiedfiles = $progress | Select-String -SimpleMatch 'new file', 'newer'
+
+            if ($copiedfiles.Count -le 0) {
+                $TotalFilesCopied = $copiedfiles.Count
+            }
+            else {
+                $TotalFilesCopied = $copiedfiles.Count - 1
+            }
+
+            # ... (rest of the progress calculation logic)
+
+            $progressParams = @{
+                Activity         = "Copying files..."
+                Status           = "Copying"
+                PercentComplete  = $totalPercentComplete
+                CurrentOperation = ""
+                TotalFiles       = $totalFiles
+                TotalBytes       = $totalBytes
+            }
+
+            Write-Progress @progressParams
+
+            if ($progress[-1] -match '%') {
+                $Filepercentcomplete = $progress[-1].substring(0, 3).trim()
+            }
+            else {
+                $Filepercentcomplete = 0
+            }
+
+            $totalPercentcomplete = (($TotalBytesCopied / $totalBytes) * 100)
+
+            # ... (rest of the progress bar display logic)
+        }
     }
+
+    Write-Progress -Id 1 -Activity "Copying files from $Source to $Destination" -Status 'Completed' -Completed
+    Write-Progress -Id 2 -Activity 'Done' -Completed
+
+    $results = Receive-Job -Job $robocopyjob
+    Remove-Job $robocopyjob
+
+    $results[5]
+    $results[-13..-1]
 }
 
 # Loop through each line of the Robocopy output and update the progress bar as files are copied
