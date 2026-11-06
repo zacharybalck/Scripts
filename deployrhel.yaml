@@ -1,52 +1,51 @@
 ---
-- name: Deploy RHEL machine
+- name: Secure and Deploy RHEL Machine
   hosts: all
   become: true
+  gather_facts: yes
 
   tasks:
-  - name: Install necessary packages
-    yum:
-      name: "{{ item }}"
-      state: present
-    with_items:
-      - vim
-      - wget
-      - net-tools
+    - name: Ensure SELinux is set to enforcing and targeted policy is active
+      selinux:
+        policy: targeted
+        state: enforcing
 
-  - name: Configure firewall
-    firewalld:
-      service: "{{ item }}"
-      state: enabled
-      permanent: yes
-      immediate: yes
-    with_items:
-      - ssh
-      - http
-      - https
+    - name: Install core base utilities
+      yum:
+        name:
+          - vim
+          - wget
+          - net-tools
+          - epel-release
+        state: present
 
-  - name: Configure SELinux
-    selinux:
-      policy: targeted
-      state: permissive
+    - name: Apply all security patches and system updates (excluding kernel)
+      yum:
+        name: '*'
+        state: latest
+        exclude: kernel*
 
-  - name: Update system
-    yum:
-      name: '*'
-      state: latest
-      exclude: kernel*
+    - name: Install development tools and python3-pip
+      yum:
+        name:
+          - gcc
+          - make
+          - python3-pip
+        state: present
 
-  - name: Reboot the system
-    reboot:
-      reboot_timeout: 300
-      post_reboot_delay: 30
-      test_command: /sbin/init
+    - name: Configure firewalld services (SSH, HTTP, HTTPS)
+      firewalld:
+        service: "{{ item }}"
+        state: enabled
+        permanent: yes
+        immediate: yes
+      loop:
+        - ssh
+        - http
+        - https
 
-  - name: Install additional packages
-    yum:
-      name: "{{ item }}"
-      state: present
-    with_items:
-      - epel-release
-      - gcc
-      - make
-      - python3-pip
+    - name: Reboot system to apply core updates and security policies
+      reboot:
+        reboot_timeout: 300
+        post_reboot_delay: 30
+        test_command: uptime
