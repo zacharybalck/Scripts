@@ -1,0 +1,43 @@
+# ==========================================
+# Stage 1: Build dependencies
+# ==========================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install compilation tools if needed, or upgrade pip
+RUN pip install --no-cache-dir --upgrade pip
+
+# Install dependencies into a local user directory for isolation
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# ==========================================
+# Stage 2: Final lightweight, secure image
+# ==========================================
+FROM python:3.11-slim AS runner
+
+# Create a non-privileged system user and group for security
+RUN groupadd -g 10001 appuser && \
+    useradd -u 10001 -g appuser -s /sbin/nologin -m appuser
+
+WORKDIR /app
+
+# Copy installed python dependencies from the builder stage
+COPY --from=builder /root/.local /home/appuser/.local
+COPY --from=builder /app /app
+
+# Copy application source code
+COPY . /app
+
+# Ensure correct permissions on the application directory
+RUN chown -R appuser:appuser /app /home/appuser/.local
+
+# Switch to non-root user
+USER appuser
+
+# Ensure local user binaries are on the PATH
+ENV PATH=/home/appuser/.local/bin:$PATH
+
+# Default command to run the application
+CMD ["python", "main.py"]
