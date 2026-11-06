@@ -1,84 +1,95 @@
-function robocopy-job {
+function Invoke-RobocopyWithProgress {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path $_ -PathType Container })]
         [string]$Source,
 
         [Parameter(Mandatory = $true)]
-        [string]$Destination
+        [string]$Destination,
+
+        [string]$CustomOptions = "/E /Z /R:3 /W:5 /MT:8"
     )
 
-    # Define the Robocopy options
-    $options = "/E /Z /ETA /PURGE /MT:8 /NP"
+    process {
+        Write-Host "[INFO] Analyzing source and calculating totals..." -ForegroundColor Cyan
 
-    $robocopycmd = "robocopy ""$Source"" ""$Destination"" /mir /bytes"
+        # Step 1: Perform a quick dry-run (/L) with /BYTES to get total files and bytes instantly
+        $dryRunArgs = @("`"$Source`"", "`"$Destination`"", "/L", "/BYTES", "/NJH", "/NJS", "/NC", "/NS", "/NP")
+        $dryRunOutput = & robocopy @dryRunArgs 2>&1
 
-    # Execute the Robocopy operation and capture the output
-    $output = Invoke-Expression $robocopycmd 2>&1
+        # Extract total bytes and files from Robocopy summary
+        $totalBytes = 0
+        $totalFiles = 0
 
-    $totalBytes = [long]([regex]::Matches($output, "Bytes : (\d+)").Value -replace "\D")
-    $totalFiles = [int]([regex]::Matches($output, "Files : (\d+)").Value -replace "\D")
-
-    $robocopyjob = Start-Job -Name robocopy -ScriptBlock {
-        param ($command)
-        Invoke-Expression -Command $command
-    } -ArgumentList $robocopycmd
-
-    while ($robocopyjob.State -eq 'Running') {
-        $progress = Receive-Job -Job $robocopyjob -Keep -ErrorAction SilentlyContinue
-
-        if ($progress) {
-            $copiedfiles = $progress | Select-String -SimpleMatch 'new file', 'newer'
-
-            if ($copiedfiles.Count -le 0) {
-                $TotalFilesCopied = $copiedfiles.Count
+        foreach ($line in $dryRunOutput) {
+            if ($line -match "Bytes\s*:\s*([\d\.]+)") {
+                # Robocopy sometimes outputs "Bytes : X (or Y)" or just numbers
+                $matchesVal = [regex]::Matches($line, "Bytes\s*:\s*(\d+)")
+                if ($matchesVal.Count -gt 0) {
+                    $totalBytes = [long]$matchesVal[0].Groups[1].Value
+                }
             }
-            else {
-                $TotalFilesCopied = $copiedfiles.Count - 1
+            if ($line -match "Files\s*:\s*(\d+)") {
+                $matchesFiles = [regex]::Matches($line, "Files\s*:\s*(\d+)")
+                if ($matchesFiles.Count -gt 0) {
+                    $totalFiles = [int]$matchesFiles[0].Groups[1].Value
+                }
             }
-
-            # ... (rest of the progress calculation logic)
-
-            $progressParams = @{
-                Activity         = "Copying files..."
-                Status           = "Copying"
-                PercentComplete  = $totalPercentComplete
-                CurrentOperation = ""
-                TotalFiles       = $totalFiles
-                TotalBytes       = $totalBytes
-            }
-
-            Write-Progress @progressParams
-
-            if ($progress[-1] -match '%') {
-                $Filepercentcomplete = $progress[-1].substring(0, 3).trim()
-            }
-            else {
-                $Filepercentcomplete = 0
-            }
-
-            $totalPercentcomplete = (($TotalBytesCopied / $totalBytes) * 100)
-
-            # ... (rest of the progress bar display logic)
         }
-    }
 
-    Write-Progress -Id 1 -Activity "Copying files from $Source to $Destination" -Status 'Completed' -Completed
-    Write-Progress -Id 2 -Activity 'Done' -Completed
+        if ($totalBytes -eq 0) {
+            Write-Host "[WARNING] Could not determine total byte size. Progress percentage may be estimated." -ForegroundColor Yellow
+            $totalBytes = 1 # Prevent division by zero
+        }
 
-    $results = Receive-Job -Job $robocopyjob
-    Remove-Job $robocopyjob
+        Write-Host "[INFO] Total Files: $totalFiles | Total Size: $([math]::Round($totalBytes / 1MB, 2)) MB" -ForegroundColor Green
+        Write-Host "[INFO] Starting file transfer..." -ForegroundColor Cyan
 
-    $results[5]
-    $results[-13..-1]
-}
+        # Step 2: Run the actual Robocopy operation and stream output
+        $robocopyArgs = $Source, $Destination, "/MIR", "/BYTES", "/NP", "/ETA"
+        # Split custom options safely and build argument list
+        $optionList = $CustomOptions -split '\s+'
 
-# Loop through each line of the Robocopy output and update the progress bar as files are copied
-$output | ForEach-Object {
-    if ($_ -match "(\d+)%(?:.*)(\d+)/(\d+)") {
-        $percentComplete = [int]$Matches[1]
-        $bytesProcessed = [long]$Matches[2]
-        $filesProcessed = [int]$Matches[3]
-        Update-Progress -Message "$percentComplete% complete" -BytesProcessed $bytesProcessed -FilesProcessed $filesProcessed
+        # We invoke robocopy and capture line-by-line output
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = "robocopy.exe"
+        $processInfo.Arguments = "`"$Source`" `"$Destination`" /MIR /BYTES /NP /ETA " + $CustomOptions
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+
+        $process = [System.Diagnostics.Process]::Start($processInfo)
+        
+        $bytesProcessed = 0
+        
+        while (-not $process.StandardOutput.EndOfStream) {
+            $line = $process.StandardOutput.ReadLine()
+            
+            # Parse progress lines (Robocopy prints percentage lines like "  45%  ")
+            if ($line -match "^\s*(\d+)%\s+") {
+                $percent = [int]$Matches[1]
+                
+                Write-Progress -Activity "Copying files from $Source to Destination" `
+                               -Status "$percent% Complete" `
+                               -PercentComplete $percent `
+                               -CurrentOperation "Copying in progress..."
+            }
+        }
+
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+
+        # Clear progress bar
+        Write-Progress -Activity "Copying files from $Source to Destination" -Completed
+
+        # Robocopy exit codes 0-7 are success/warnings, 8+ are actual failures
+        if ($exitCode -ge 8) {
+            Write-Host "[ERROR] Robocopy encountered errors during execution. Exit code: $exitCode" -ForegroundColor Red
+            return $false
+        } else {
+            Write-Host "[SUCCESS] Copy completed successfully! (Exit code: $exitCode)" -ForegroundColor Green
+            return $true
+        }
     }
 }
