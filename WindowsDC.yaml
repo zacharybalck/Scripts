@@ -1,44 +1,38 @@
 ---
-- hosts: all
-  gather_facts: no
+- name: Configure Primary Domain Controller (DC-1)
+  hosts: dc1
+  gather_facts: yes
 
   tasks:
-    - name: Install Chocolatey
+    - name: Install Chocolatey Package Manager
       win_chocolatey:
         name: chocolatey
         state: present
 
-    - name: Install AD Domain Services role
+    - name: Install AD Domain Services and DNS Server roles
       win_feature:
-        name: AD-Domain-Services
+        name:
+          - AD-Domain-Services
+          - DNS
         state: present
-
-    - name: Install DNS Server role
-      win_feature:
-        name: DNS
-        state: present
-
-    - name: Install RSAT-AD-PowerShell module
-      win_chocolatey:
-        name: RSAT.AD.PowerShell
-        state: present
+        include_management_tools: yes
 
     - name: Set drive labels
       win_label:
         drive_letter: "{{ item.drive }}"
         label: "{{ item.label }}"
-      with_items:
+      loop:
         - { drive: "C:", label: "OS" }
         - { drive: "E:", label: "Software" }
         - { drive: "F:", label: "Audit-Logs" }
 
     - name: Set local administrator password
       win_user:
-        name: "dod_admin"
-        password: "qwer1234QWER!@#$"
+        name: "{{ vault_local_admin_user | default('dod_admin') }}"
+        password: "{{ vault_local_admin_password }}"
         state: present
 
-    - name: Promote DC-1 to domain controller
+    - name: Promote DC-1 to primary domain controller
       win_domain_controller:
         domain_admin_user: "Administrator"
         domain_admin_password: "{{ vault_domain_admin_password }}"
@@ -53,14 +47,45 @@
           - RID
           - Infrastructure
         state: present
+      register: dc1_promotion
 
-    - name: Set DC-1 as DNS server
+    - name: Reboot after DC promotion if required
+      win_reboot:
+        msg: "Rebooting DC-1 following Active Directory promotion."
+        reboot_timeout: 900
+      when: dc1_promotion.reboot_required | default(false)
+
+    - name: Set DC-1 DNS server to loopback / local IP
       win_dns_client:
         adapter_names: "Ethernet0"
-        dns_servers: "{{ hostvars['localhost']['ansible_default_ipv4']['address'] }}"
+        dns_servers:
+          - "{{ ansible_ip_addresses[0] }}"
         register_connection_suffix: yes
 
-    - name: Add DC-2 to domain
+
+- name: Configure Secondary Domain Controller (DC-2)
+  hosts: dc2
+  gather_facts: yes
+
+  tasks:
+    - name: Install AD Domain Services and RSAT PowerShell module
+      win_feature:
+        name:
+          - AD-Domain-Services
+          - Rsat-AD-PowerShell
+        state: present
+        include_management_tools: yes
+
+    - name: Set drive labels on DC-2
+      win_label:
+        drive_letter: "{{ item.drive }}"
+        label: "{{ item.label }}"
+      loop:
+        - { drive: "C:", label: "OS" }
+        - { drive: "E:", label: "Software" }
+        - { drive: "F:", label: "Audit-Logs" }
+
+    - name: Join DC-2 to the domain
       win_domain:
         domain_admin_user: "Administrator"
         domain_admin_password: "{{ vault_domain_admin_password }}"
@@ -69,36 +94,35 @@
         hostname: "DC-2"
         ou_path: "{{ ansible_ou_path }}"
         state: domain
+      register: dc2_join
+
+    - name: Reboot after joining domain
+      win_reboot:
+        msg: "Rebooting DC-2 after joining the domain."
+        reboot_timeout: 900
+      when: dc2_join.reboot_required | default(false)
 
     - name: Set local administrator password on DC-2
       win_user:
-        name: "dod_admin"
-        password: "qwer1234QWER!@#$"
+        name: "{{ vault_local_admin_user | default('dod_admin') }}"
+        password: "{{ vault_local_admin_password }}"
         state: present
-        runas_username: "Administrator"
-        runas_password: "{{ vault_domain_admin_password }}"
-        become: yes
 
-    - name: Install RSAT-AD-PowerShell module on DC-2
-      win_chocolatey:
-        name: RSAT.AD.PowerShell
-        state: present
-        runas_username: "Administrator"
-        runas_password: "{{ vault_domain_admin_password }}"
-        become: yes
-
-    - name: Set drive labels on DC-2
-      win_label:
-        drive_letter: "{{ item.drive }}"
-        label: "{{ item.label }}"
-      with_items:
-        - { drive: "C:", label: "OS" }
-        - { drive: "E:", label: "Software" }
-        - { drive: "F:", label: "Audit-Logs" }
-      runas_username: "Administrator"
-      runas_password: "{{ vault_domain_admin_password }}"
-      become: yes
-
-    - name: Promote DC-2 to domain controller
+    - name: Promote DC-2 to secondary domain controller
       win_domain_controller:
-        domain_admin_user:
+        domain_admin_user: "Administrator"
+        domain_admin_password: "{{ vault_domain_admin_password }}"
+        domain_name: "{{ ansible_domain }}"
+        domain_netbios_name: "{{ ansible_netbios_name }}"
+        safe_mode_password: "{{ vault_safe_mode_password }}"
+        site_name: "{{ ansible_site_name }}"
+        install_dns: yes
+        promote_restart_timeout: 600
+        state: present
+      register: dc2_promotion
+
+    - name: Reboot after DC-2 promotion
+      win_reboot:
+        msg: "Rebooting DC-2 following replica domain controller promotion."
+        reboot_timeout: 900
+      when: dc2_promotion.reboot_required | default(false)
