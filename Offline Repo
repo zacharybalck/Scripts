@@ -1,19 +1,35 @@
 #!/bin/bash
+#
+# Script Name: Offline Repo Setup & Maintenance
+# Description: Configures a local YUM repository, applies offline updates, 
+#              resets specified passwords, cleans caches, and clears history.
+#
 
-# Check if running as root
+# Exit immediately if a command exits with a non-status zero (optional, comment out if you want strict non-stop behavior)
+# set -e
+
+# Ensure script is run as root
 if [[ $EUID -ne 0 ]]; then
-   echo "Running as root" 
-   exit 1
+    echo "[ERROR]: This script must be run as root." >&2
+    exit 1
 fi
 
-# Starting Task 1: Building Offline Repo
-echo "Starting Task 1: Building Offline Repo"
+echo "=========================================="
+echo " Starting Task 1: Building Offline Repo"
+echo "=========================================="
+
+REPO_FILE="/etc/yum.repos.d/offline.repo"
+REPO_PATH="/tmp/usb/temprepo"
+
+if [[ ! -d "$REPO_PATH" ]]; then
+    echo "[WARNING]: Repository path $REPO_PATH does not exist. Ensure your USB/repo source is mounted."
+fi
 
 # Creates the repo file in /etc/yum.repos.d/
-cat > /etc/yum.repos.d/offline.repo << EOF
+cat > "$REPO_FILE" << EOF
 [offline]
 name=Offline Repository
-baseurl=file:///tmp/usb/temprepo
+baseurl=file://$REPO_PATH
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
 enabled=1
 gpgcheck=0
@@ -21,42 +37,65 @@ repo_gpgcheck=0
 priority=1
 EOF
 
-# Clean the repos
+echo "[INFO]: Cleaning package manager cache..."
 yum clean all
 
-# Echo Starting Task 2: Applying Updates
-echo "Starting Task 2: Applying Updates"
+echo ""
+echo "=========================================="
+echo " Starting Task 2: Applying Updates"
+echo "=========================================="
 
-# Apply updates from /mnt/sr0
-yum update --disablerepo=* --enablerepo=offline
+# Apply updates from the offline repository automatically (-y)
+yum update --disablerepo=* --enablerepo=offline -y
 
-# Echo Starting Task 3: Restoring System Settings
-echo "Starting Task 3: Restoring System Settings"
+echo ""
+echo "=========================================="
+echo " Starting Task 3: Restoring System Settings"
+echo "=========================================="
 
 # Reset root password
-echo "Resetting Root Password"
+echo "[INFO]: Resetting Root Password..."
 passwd root
 
-# Reset SSH account password
-echo "Resetting SSH Account Password"
-passwd sshaccount
+# Reset SSH account password only if the user exists
+if id "sshaccount" &>/dev/null; then
+    echo "[INFO]: Resetting SSH Account Password for 'sshaccount'..."
+    passwd sshaccount
+else
+    echo "[WARNING]: User 'sshaccount' does not exist. Skipping password reset."
+fi
 
-# Remove temporary files from home directory
-echo "Removing Temporary Files from Home Directory"
-rm -rf /home/*/.cache /home/*/.local/share/Trash
+# Remove temporary files from home directories safely
+echo "[INFO]: Removing temporary files and caches..."
+rm -rf /home/*/.cache /home/*/.local/share/Trash 2>/dev/null || true
 
 # Clear history and screen history
-echo "Clearing History and Screen History"
+echo "[INFO]: Clearing terminal history..."
 history -c
+history -w
 rm -f /root/.bash_history
 rm -f /home/*/.bash_history
 
-# Reboot with prompt
+echo ""
+echo "=========================================="
+echo " Maintenance Complete!"
+echo "=========================================="
+
+# Reboot prompt loop
 while true; do
     read -p "Do you want to reboot the server now? (y/n) " yn
     case $yn in
-        [Yy]* ) reboot; break;;
-        [Nn]* ) exit;;
-        * ) echo "Please answer yes or no.";;
+        [Yy]* ) 
+            echo "[INFO]: Rebooting system..."
+            reboot
+            break
+            ;;
+        [Nn]* ) 
+            echo "[INFO]: Reboot skipped. Remember to reboot manually."
+            exit 0
+            ;;
+        * ) 
+            echo "Please answer yes or no."
+            ;;
     esac
 done
