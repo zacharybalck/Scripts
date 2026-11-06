@@ -1,0 +1,29 @@
+# --- Juniper Junos Hardened Baseline Configuration ---
+
+# System Identification & Services
+set system host-name core-switch-01
+set system domain-name enterprise.local
+set system time-zone America/New_York
+set system root-authentication encrypted-password "$6$rounds=65535$generated_hash_string_here"
+
+# Secure Management Services (SSHv2 Only)
+set system services ssh protocol-version v2
+set system services ssh root-login deny
+set system services ssh max-sessions-per-connection 4
+set system services ssh connection-limit 10
+set system services netconf ssh
+
+# Disable Insecure Services
+delete system services telnet
+delete system services rlogin
+delete system services ftp
+
+# System Logging & NTP
+set system syslog host 10.100.10.50 any notice
+set system syslog host 10.100.10.50 authorization info
+set system ntp server 10.100.10.10
+
+# Security Zones & Management Plane Protection
+set security zones security-zone management host-inbound-traffic system-services ssh
+set security zones security-zone management host-inbound-traffic system-services ping
+set security zones security-zone management host-inbound-traffic system-services ntp
